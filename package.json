@@ -11,7 +11,8 @@
     "start": "node src/app.js",
     "test": "node --test",
     "lint": "eslint src tests",
-    "test:e2e": "node tests/e2e.js"
+    "test:e2e": "node tests/e2e.js",
+    "test:integration": "node tests/integration.js"
   },
   "dependencies": {
     "express": "^4.22.3"

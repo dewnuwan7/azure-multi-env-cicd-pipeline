@@ -1,0 +1,36 @@
+name: Roll back production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_label:
+        description: Label that should receive 100% of production traffic
+        required: true
+        type: choice
+        options: [blue, green]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Move all traffic to the chosen label
+        run: |
+          TARGET=${{ inputs.target_label }}
+          if [ "$TARGET" = "blue" ]; then OTHER=green; else OTHER=blue; fi
+          az containerapp ingress traffic show -g rg-nodeapp-prod -n nodeapp -o json > traffic.json
+          jq -e --arg l "$TARGET" '.[] | select(.label==$l)' traffic.json > /dev/null \
+            || { echo "Label $TARGET has no revision. Stopping."; exit 1; }
+          az containerapp ingress traffic set -g rg-nodeapp-prod -n nodeapp \
+            --label-weight $TARGET=100 $OTHER=0
+          echo "Traffic now on $TARGET." >> "$GITHUB_STEP_SUMMARY"
