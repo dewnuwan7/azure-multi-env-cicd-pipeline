@@ -130,6 +130,7 @@ jobs:
 
       - name: Confirm the image exists for this commit
         run: az acr repository show --name $REGISTRY --image $IMAGE:${GITHUB_SHA} --query name -o tsv
+        
       - id: deploy
         run: |
           az deployment group create -g $RG_STAGING -n app \
@@ -189,8 +190,12 @@ jobs:
             --image ${{ needs.build.outputs.image }} \
             --revision-suffix ${GITHUB_SHA:0:7} \
             --set-env-vars APP_VERSION=${GITHUB_SHA}
+          NEW_REV="$APP--${GITHUB_SHA:0:7}"
           az containerapp ingress traffic show -g $RG_PROD -n $APP -o json > traffic.json
-          NEW_W=$(jq -r --arg r "$APP--${GITHUB_SHA:0:7}" '.[] | select(.revisionName==$r) | .weight' traffic.json)
+          NEW_W=$(jq -r --arg r "$NEW_REV" \
+            '[.[] | select(.revisionName==$r or (.latestRevision==true and .revisionName==null)) | .weight] | add // 0' \
+            traffic.json)
+          echo "New revision weight: $NEW_W"
           if [ "$NEW_W" != "0" ]; then
             echo "The new revision received traffic ($NEW_W%). Stopping."
             exit 1

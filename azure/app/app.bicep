@@ -44,7 +44,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         traffic: revisionMode == 'Multiple'
           ? [
               {
-                latestRevision: true
+                revisionName: '${appName}--${revisionSuffix}'
                 weight: 100
                 label: 'blue'
               }
