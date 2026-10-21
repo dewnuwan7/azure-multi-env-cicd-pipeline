@@ -19,7 +19,7 @@ env:
   RG_PROD: rg-nodeapp-prod
 
 jobs:
-  # Runs on pull requests and on pushes to main. No Azure access.
+  # Runs on pull requests and on pushes to main. 
   test:
     runs-on: ubuntu-latest
     steps:
@@ -67,13 +67,20 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
+
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Confirm the image exists for this commit
         run: az acr repository show --name $REGISTRY --image $IMAGE:${GITHUB_SHA} --query name -o tsv
       - id: deploy
@@ -87,11 +94,19 @@ jobs:
           FQDN=$(az deployment group show -g $RG_DEV -n app \
             --query properties.outputs.appFqdn.value -o tsv)
           echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test
         run: curl -fsS --retry 5 --retry-delay 10 "${{ steps.deploy.outputs.url }}/health"
 
+      - name: Integration tests (version must match this commit)
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.url }}
+          EXPECTED_VERSION: ${{ github.sha }}
+          EXPECTED_ENVIRONMENT: dev
+        run: npm run test:integration
+
   deploy-staging:
-    needs: deploy-dev
+    needs: [build, deploy-dev]
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -112,6 +127,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Confirm the image exists for this commit
         run: az acr repository show --name $REGISTRY --image $IMAGE:${GITHUB_SHA} --query name -o tsv
       - id: deploy
@@ -125,11 +141,12 @@ jobs:
           FQDN=$(az deployment group show -g $RG_STAGING -n app \
             --query properties.outputs.appFqdn.value -o tsv)
           echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+          
       - name: End-to-end tests
         run: BASE_URL="${{ steps.deploy.outputs.url }}" npm run test:e2e
 
   deploy-prod:
-    needs: deploy-staging
+    needs: [build, deploy-staging]
     runs-on: ubuntu-latest
     environment: production
     permissions:
