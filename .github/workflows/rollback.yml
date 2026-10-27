@@ -117,7 +117,7 @@ jobs:
           [ "$STANDBY_W" = "0" ] || abort "Standby label $STANDBY_LABEL is not at 0%."
 
           # Do not act while a release is running or queued. That release's end state is what must be judged.
-          ACTIVE=$(gh run list --repo $REPO --workflow ci-cd.yml --json status \
+          ACTIVE=$(gh run list --repo $REPO --workflow ci-cd.yaml --json status \
             --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length')
           [ "$ACTIVE" = "0" ] || abort "A release is in progress or queued. Re-evaluate after it finishes."
 
