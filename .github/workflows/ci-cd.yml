@@ -368,6 +368,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          FQDN=$(az containerapp show -g $RG_PROD -n $APP_PROD \
+            --query properties.configuration.ingress.fqdn -o tsv | tr -d '\r')
+          if [ -z "$FQDN" ]; then
+            echo "Could not read the production address."
+            exit 1
+          fi
           PAYLOAD=$(jq -cn --arg image "${{ needs.build.outputs.image }}" \
             --arg rev "$APP_PROD--${{ needs.build.outputs.revision }}" \
             '{image: $image, revision: $rev}')
@@ -380,7 +386,7 @@ jobs:
               payload: $payload
             }' | gh api repos/$REPO/deployments -X POST --input - --jq .id)
           gh api repos/$REPO/deployments/$ID/statuses -X POST \
-            -f state=success -f environment_url="${{ steps.url.outputs.url }}"
+            -f state=success -f environment_url="https://$FQDN"
 
   # Only after a successful production release. Permanent Git record.
   tag-release:
