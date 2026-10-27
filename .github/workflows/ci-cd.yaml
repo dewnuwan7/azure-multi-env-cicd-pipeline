@@ -116,18 +116,11 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy the digest to dev
-        uses: azure/container-apps-deploy-action@v2
-        with:
-          containerAppName: ${{ env.APP_DEV }}
-          resourceGroup: ${{ env.RG_DEV }}
-          containerAppEnvironment: ${{ env.CAE_DEV }}
-          location: eastus
-          imageToDeploy: ${{ needs.build.outputs.image }}
-          acrName: ${{ env.REGISTRY }}
-          ingress: external
-          targetPort: 3000
-          environmentVariables: ENVIRONMENT=dev APP_VERSION=${{ github.sha }}
-          disableTelemetry: true
+        run: |
+          az containerapp update -g $RG_DEV -n $APP_DEV \
+            --image "${{ needs.build.outputs.image }}" \
+            --revision-suffix "${GITHUB_SHA:0:7}" \
+            --set-env-vars ENVIRONMENT=dev APP_VERSION=${GITHUB_SHA} REQUEST_LOGGING=off
       - name: Get the dev address
         id: url
         run: |
@@ -182,12 +175,11 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy the digest to staging
-        uses: azure/container-apps-deploy-action@v2
-        with:
-          containerAppName: ${{ env.APP_STAGING }}
-          resourceGroup: ${{ env.RG_STAGING }}
-          containerAppEnvironment: ${{ env.CAE_STAGING }}
-          location: eastus
+        run: |
+          az containerapp update -g $RG_STAGING -n $APP_STAGING \
+            --image "${{ needs.build.outputs.image }}" \
+            --revision-suffix "${GITHUB_SHA:0:7}" \
+            --set-env-vars ENVIRONMENT=staging APP_VERSION=${GITHUB_SHA}
           imageToDeploy: ${{ needs.build.outputs.image }}
           acrName: ${{ env.REGISTRY }}
           ingress: external

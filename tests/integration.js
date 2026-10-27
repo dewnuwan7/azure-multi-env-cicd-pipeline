@@ -1,6 +1,6 @@
 // Runs against a deployed environment after deploy. Checks that the app
 // is healthy AND running the exact commit the pipeline built.
-//Requires BASE_URL, EXPECTED_VERSION and EXPECTED_ENVIRONMENT to be set in the environment.
+// Requires BASE_URL, EXPECTED_VERSION and EXPECTED_ENVIRONMENT to be set in the environment.
 const base = process.env.BASE_URL;
 const expectedVersion = process.env.EXPECTED_VERSION;
 const expectedEnvironment = process.env.EXPECTED_ENVIRONMENT;
@@ -10,28 +10,46 @@ if (!base || !expectedVersion || !expectedEnvironment) {
   process.exit(1);
 }
 
-// Scale-to-zero (dev) can make the first requests slow, so retry for about a minute.
+// Polls until the app reports the expected commit. Dev can take a while to switch
+// to a new revision, so this waits up to five minutes. If the old version is still
+// answering when time runs out, the error names it.
+async function waitForVersion(path, expected, maxSeconds = 300) {
+  const deadline = Date.now() + maxSeconds * 1000;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(base + path);
+      if (res.ok) {
+        last = await res.json();
+        if (last.version === expected) return last;
+      }
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 10000));
+  }
+  throw new Error(`version never became ${expected}; last seen: ${last && last.version}`);
+}
+
+// Retries a request for about a minute, for endpoints that may still be warming up.
 async function getJson(path, attempts = 6) {
   for (let i = 1; i <= attempts; i++) {
     try {
       const res = await fetch(base + path);
       if (res.ok) return await res.json();
     } catch {
-      // fall through and retry
+      // retry
     }
     await new Promise((r) => setTimeout(r, 10000));
   }
-  throw new Error(`${path} did not become healthy after ${attempts} attempts`);
+  throw new Error(`${path} did not respond after ${attempts} attempts`);
 }
 
 (async () => {
-  const status = await getJson('/api/status');
+  const status = await waitForVersion('/api/status', expectedVersion);
   if (status.status !== 'running') throw new Error('status is not running');
   if (status.environment !== expectedEnvironment) {
     throw new Error(`environment is ${status.environment}, expected ${expectedEnvironment}`);
-  }
-  if (status.version !== expectedVersion) {
-    throw new Error(`version is ${status.version}, expected ${expectedVersion}`);
   }
 
   const health = await getJson('/health');
