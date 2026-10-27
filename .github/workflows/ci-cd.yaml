@@ -142,11 +142,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ID=$(gh api repos/$REPO/deployments -X POST \
-            -f ref=$GITHUB_SHA -f environment=dev \
-            -F transient=false -F production_environment=false \
-            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_DEV--${{ needs.build.outputs.revision }}\"}" \
-            --jq .id)
+          PAYLOAD=$(jq -cn --arg image "${{ needs.build.outputs.image }}" \
+            --arg rev "$APP_DEV--${{ needs.build.outputs.revision }}" \
+            '{image: $image, revision: $rev}')
+          ID=$(jq -n --arg ref "$GITHUB_SHA" --arg payload "$PAYLOAD" '{
+              ref: $ref,
+              environment: "dev",
+              transient_environment: false,
+              production_environment: false,
+              required_contexts: [],
+              payload: $payload
+            }' | gh api repos/$REPO/deployments -X POST --input - --jq .id)
           gh api repos/$REPO/deployments/$ID/statuses -X POST \
             -f state=success -f environment_url="${{ steps.url.outputs.url }}"
 
