@@ -186,12 +186,7 @@ jobs:
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix "${GITHUB_SHA:0:7}" \
             --set-env-vars ENVIRONMENT=staging APP_VERSION=${GITHUB_SHA}
-          imageToDeploy: ${{ needs.build.outputs.image }}
-          acrName: ${{ env.REGISTRY }}
-          ingress: external
-          targetPort: 3000
-          environmentVariables: ENVIRONMENT=staging APP_VERSION=${{ github.sha }}
-          disableTelemetry: true
+         
       - name: Get the staging address
         id: url
         run: |
