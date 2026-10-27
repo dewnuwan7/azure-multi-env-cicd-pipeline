@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f5f2">
+    <title>Node APP</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+        background: #f5f5f2;
+        color: #171717;
+        font-synthesis: none;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        background-image: radial-gradient(#d8d8d3 0.7px, transparent 0.7px);
+        background-size: 16px 16px;
+      }
+
+      header, main, footer { width: min(100% - 40px, 760px); margin-inline: auto; }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-block: 22px;
+        border-bottom: 1px solid #d4d4cf;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .mark { display: grid; width: 25px; height: 25px; place-items: center; background: #171717; color: white; font-size: 12px; }
+      .muted { color: #777771; font-weight: 450; }
+
+      main { padding-block: clamp(52px, 11vh, 104px) 64px; }
+      .eyebrow { margin: 0 0 14px; color: #777771; font-size: 11px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase; }
+      h1 { margin: 0; font-family: Georgia, serif; font-size: 56px; font-weight: 500; line-height: 1; }
+      .intro { max-width: 430px; margin: 18px 0 38px; color: #696963; font-size: 15px; line-height: 1.6; }
+
+      .status-panel { border: 1px solid #d4d4cf; background: #fbfbf9; }
+      .panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 17px 20px; border-bottom: 1px solid #e1e1dc; }
+      .panel-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }
+      .live { display: inline-flex; align-items: center; gap: 7px; color: #343430; font-size: 11px; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: #252525; }
+      .details { display: grid; grid-template-columns: repeat(3, 1fr); }
+      .detail { min-width: 0; padding: 21px 20px 23px; }
+      .detail + .detail { border-left: 1px solid #e1e1dc; }
+      .label { display: block; margin-bottom: 11px; color: #777771; font-size: 11px; }
+      .value { overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
+      .actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; }
+      .updated { color: #777771; font-size: 11px; }
+      button { min-height: 38px; padding: 0 14px; border: 1px solid #171717; background: #171717; color: white; font: inherit; font-size: 12px; cursor: pointer; }
+      button:hover { background: #393939; }
+      button:focus-visible { outline: 2px solid #171717; outline-offset: 3px; }
+      footer { padding-block: 17px; border-top: 1px solid #d4d4cf; color: #777771; font-size: 11px; }
+
+      @media (max-width: 520px) {
+        header, main, footer { width: min(100% - 32px, 760px); }
+        h1 { font-size: 42px; }
+        .details { grid-template-columns: 1fr; }
+        .detail { padding: 15px 18px; }
+        .detail + .detail { border-top: 1px solid #e1e1dc; border-left: 0; }
+        .label { margin-bottom: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="mark" aria-hidden="true">N</span><span>STATUS</span></div>
+      <span class="muted">NODE APP</span>
+    </header>
+    <main>
+      <p class="eyebrow">Service overview</p>
+      <h1>Everything<br>is running.</h1>
+      <p class="intro">A small Node.js service, ready for its next deployment.</p>
+
+      <section class="status-panel" aria-labelledby="status-title">
+        <div class="panel-heading">
+          <h2 id="status-title">Application status</h2>
+          <span class="live"><span class="dot" aria-hidden="true"></span><span id="status">Checking</span></span>
+        </div>
+        <div class="details">
+          <div class="detail"><span class="label">Environment</span><span class="value" id="environment">—</span></div>
+          <div class="detail"><span class="label">Version</span><span class="value" id="version" title="">—</span></div>
+          <div class="detail"><span class="label">Health check</span><span class="value" id="health">Waiting</span></div>
+        </div>
+      </section>
+      <div class="actions">
+        <span class="updated" id="updated">Fetching service status…</span>
+        <button id="refresh" type="button">Refresh status</button>
+      </div>
+    </main>
+    <!-- <footer>Built to be simple. Running on Express.</footer> -->
+    <script>
+      const statusLabel = document.querySelector('#status');
+      const environmentLabel = document.querySelector('#environment');
+      const versionLabel = document.querySelector('#version');
+      const healthLabel = document.querySelector('#health');
+      const updatedLabel = document.querySelector('#updated');
+
+      async function refreshStatus() {
+        statusLabel.textContent = 'Checking';
+        healthLabel.textContent = 'Checking';
+
+        try {
+          const [statusResponse, healthResponse] = await Promise.all([
+            fetch('/api/status'),
+            fetch('/health')
+          ]);
+
+          if (!statusResponse.ok || !healthResponse.ok) throw new Error('Service unavailable');
+
+          const status = await statusResponse.json();
+          const health = await healthResponse.json();
+          statusLabel.textContent = status.status === 'running' ? 'Operational' : 'Unavailable';
+          environmentLabel.textContent = status.environment;
+          // Show the short commit SHA. The full value is available on hover.
+          versionLabel.textContent = String(status.version).slice(0, 7);
+          versionLabel.title = status.version;
+          healthLabel.textContent = health.healthy ? 'Passing' : 'Failing';
+          updatedLabel.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
+        } catch {
+          statusLabel.textContent = 'Unavailable';
+          versionLabel.textContent = '—';
+          versionLabel.title = '';
+          healthLabel.textContent = 'Unreachable';
+          updatedLabel.textContent = 'Could not reach the service';
+        }
+      }
+
+      document.querySelector('#refresh').addEventListener('click', refreshStatus);
+      refreshStatus();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,42 @@
+{
+  "name": "nodeapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Portfolio app for multi-environment CI/CD on Azure Container Apps",
+  "main": "src/app.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/app.js",
+    "test": "node --test",
+    "lint": "eslint src tests",
+    "test:e2e": "node tests/e2e.js",
+    "test:integration": "node tests/integration.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0"
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline/issues"
+  },
+  "homepage": "https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline#readme"
+}
