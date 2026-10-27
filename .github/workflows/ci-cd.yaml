@@ -186,7 +186,21 @@ jobs:
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix "${GITHUB_SHA:0:7}" \
             --set-env-vars ENVIRONMENT=staging APP_VERSION=${GITHUB_SHA}
-         
+      
+      - name: Wait for the staging revision to be ready
+        run: |
+          for i in $(seq 1 30); do
+            READY=$(az containerapp show -g $RG_STAGING -n $APP_STAGING \
+              --query properties.latestReadyRevisionName -o tsv | tr -d '\r')
+            if [ "$READY" = "$APP_STAGING--${GITHUB_SHA:0:7}" ]; then
+              echo "Ready: $READY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Revision $APP_STAGING--${GITHUB_SHA:0:7} never became ready."
+          exit 1
+
       - name: Get the staging address
         id: url
         run: |
@@ -202,13 +216,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ID=$(gh api repos/$REPO/deployments -X POST \
-            -f ref=$GITHUB_SHA -f environment=staging \
-            -F transient=false -F production_environment=false \
-            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_STAGING--${{ needs.build.outputs.revision }}\"}" \
-            --jq .id)
+          PAYLOAD=$(jq -cn --arg image "${{ needs.build.outputs.image }}" \
+            --arg rev "$APP_STAGING--${{ needs.build.outputs.revision }}" \
+            '{image: $image, revision: $rev}')
+          ID=$(jq -n --arg ref "$GITHUB_SHA" --arg payload "$PAYLOAD" '{
+              ref: $ref,
+              environment: "staging",
+              transient_environment: false,
+              production_environment: false,
+              required_contexts: [],
+              payload: $payload
+            }' | gh api repos/$REPO/deployments -X POST --input - --jq .id)
           gh api repos/$REPO/deployments/$ID/statuses -X POST \
             -f state=success -f environment_url="${{ steps.url.outputs.url }}"
+
   # Waits for a reviewer. Blue/green release, checked before any traffic moves.
   deploy-prod:
     needs: [build, deploy-staging]
@@ -347,11 +368,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ID=$(gh api repos/$REPO/deployments -X POST \
-            -f ref=$GITHUB_SHA -f environment=production \
-            -F transient=false -F production_environment=true \
-            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_PROD--${{ needs.build.outputs.revision }}\"}" \
-            --jq .id)
+          PAYLOAD=$(jq -cn --arg image "${{ needs.build.outputs.image }}" \
+            --arg rev "$APP_PROD--${{ needs.build.outputs.revision }}" \
+            '{image: $image, revision: $rev}')
+          ID=$(jq -n --arg ref "$GITHUB_SHA" --arg payload "$PAYLOAD" '{
+              ref: $ref,
+              environment: "production",
+              transient_environment: false,
+              production_environment: true,
+              required_contexts: [],
+              payload: $payload
+            }' | gh api repos/$REPO/deployments -X POST --input - --jq .id)
           gh api repos/$REPO/deployments/$ID/statuses -X POST \
             -f state=success -f environment_url="${{ steps.url.outputs.url }}"
 
