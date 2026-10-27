@@ -1,0 +1,380 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: thesudofiles
+  IMAGE: nodeapp
+  REPO: dewnuwan7/azure-multi-env-cicd-pipeline
+  RG_DEV: rg-nodeapp-dev
+  RG_STAGING: rg-nodeapp-staging
+  RG_PROD: rg-nodeapp-prod
+  APP_DEV: nodeapp-dev
+  APP_STAGING: nodeapp-staging
+  APP_PROD: nodeapp-prod
+  CAE_DEV: cae-nodeapp-dev
+  CAE_STAGING: cae-nodeapp-staging
+  CAE_PROD: cae-nodeapp-prod
+
+jobs:
+  
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm audit --audit-level=high
+
+
+  bicep:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build every template
+        run: |
+          az bicep version || az bicep install
+          for f in azure/shared/identity.bicep azure/env/environment.bicep azure/app/app.bicep; do
+            az bicep build --file "$f"
+          done
+
+  # Pushes only. Builds once, scans, pushes, and records the digest.
+  build:
+    needs: [test, bicep]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      revision: ${{ steps.push.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name $REGISTRY
+      - name: Build locally
+        run: docker build -t $IMAGE:scan .
+      - name: Scan for fixable critical and high vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:scan
+          severity: CRITICAL,HIGH
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Push, then record the digest
+        id: push
+        run: |
+          TAG="$REGISTRY.azurecr.io/$IMAGE:$GITHUB_SHA"
+          docker tag $IMAGE:scan "$TAG"
+          docker push "$TAG"
+          DIGEST=$(az acr repository show --name $REGISTRY --image $IMAGE:$GITHUB_SHA \
+            --query digest -o tsv | tr -d '\r')
+          echo "image=$REGISTRY.azurecr.io/$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "revision=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+  # Auto  Deploys the digest, then proves the exact commit is running.
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+    concurrency:
+      group: nodeapp-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy the digest to dev
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          containerAppName: ${{ env.APP_DEV }}
+          resourceGroup: ${{ env.RG_DEV }}
+          containerAppEnvironment: ${{ env.CAE_DEV }}
+          location: eastus
+          imageToDeploy: ${{ needs.build.outputs.image }}
+          acrName: ${{ env.REGISTRY }}
+          ingress: external
+          targetPort: 3000
+          environmentVariables: ENVIRONMENT=dev APP_VERSION=${{ github.sha }}
+          disableTelemetry: true
+      - name: Get the dev address
+        id: url
+        run: |
+          FQDN=$(az containerapp show -g $RG_DEV -n $APP_DEV \
+            --query properties.configuration.ingress.fqdn -o tsv | tr -d '\r')
+          echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        run: curl -fsS --retry 5 --retry-delay 10 "${{ steps.url.outputs.url }}/health"
+      
+      - name: Integration tests (version must match this commit)
+        env:
+          BASE_URL: ${{ steps.url.outputs.url }}
+          EXPECTED_VERSION: ${{ github.sha }}
+          EXPECTED_ENVIRONMENT: dev
+        run: npm run test:integration
+
+      - name: Record the development deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ID=$(gh api repos/$REPO/deployments -X POST \
+            -f ref=$GITHUB_SHA -f environment=dev \
+            -F transient=false -F production_environment=false \
+            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_DEV--${{ needs.build.outputs.revision }}\"}" \
+            --jq .id)
+          gh api repos/$REPO/deployments/$ID/statuses -X POST \
+            -f state=success -f environment_url="${{ steps.url.outputs.url }}"
+
+  # Automatic once dev's integration tests pass. Same digest.
+  deploy-staging:
+    needs: [build, deploy-dev]
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+    concurrency:
+      group: nodeapp-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy the digest to staging
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          containerAppName: ${{ env.APP_STAGING }}
+          resourceGroup: ${{ env.RG_STAGING }}
+          containerAppEnvironment: ${{ env.CAE_STAGING }}
+          location: eastus
+          imageToDeploy: ${{ needs.build.outputs.image }}
+          acrName: ${{ env.REGISTRY }}
+          ingress: external
+          targetPort: 3000
+          environmentVariables: ENVIRONMENT=staging APP_VERSION=${{ github.sha }}
+          disableTelemetry: true
+      - name: Get the staging address
+        id: url
+        run: |
+          FQDN=$(az containerapp show -g $RG_STAGING -n $APP_STAGING \
+            --query properties.configuration.ingress.fqdn -o tsv | tr -d '\r')
+          echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+      - name: End-to-end tests
+        env:
+          BASE_URL: ${{ steps.url.outputs.url }}
+        run: npm run test:e2e
+
+      - name: Record the staging deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ID=$(gh api repos/$REPO/deployments -X POST \
+            -f ref=$GITHUB_SHA -f environment=staging \
+            -F transient=false -F production_environment=false \
+            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_STAGING--${{ needs.build.outputs.revision }}\"}" \
+            --jq .id)
+          gh api repos/$REPO/deployments/$ID/statuses -X POST \
+            -f state=success -f environment_url="${{ steps.url.outputs.url }}"
+  # Waits for a reviewer. Blue/green release, checked before any traffic moves.
+  deploy-prod:
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+    concurrency:
+      group: nodeapp-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check the production state before changing anything
+        id: state
+        run: |
+          az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
+          cat traffic.json
+          LIVE_REV=$(jq -r '[.[] | select(.weight==100) | .revisionName // empty] | first // empty' traffic.json)
+          LIVE_LABEL=$(jq -r --arg r "$LIVE_REV" \
+            '[.[] | select(.revisionName==$r and .label!=null) | .label] | first // empty' traffic.json)
+          NONZERO=$(jq '[.[] | select(.weight>0)] | length' traffic.json)
+
+          if [ -z "$LIVE_REV" ] || [ "$NONZERO" != "1" ]; then
+            echo "Traffic must sit on exactly one revision at 100%. Stopping."
+            exit 1
+          fi
+          case "$LIVE_LABEL" in
+            blue)  STANDBY=green ;;
+            green) STANDBY=blue ;;
+            *) echo "The live revision has no blue or green label on its row. Stopping."; exit 1 ;;
+          esac
+          echo "live_rev=$LIVE_REV" >> "$GITHUB_OUTPUT"
+          echo "live_label=$LIVE_LABEL" >> "$GITHUB_OUTPUT"
+          echo "standby=$STANDBY" >> "$GITHUB_OUTPUT"
+          echo "Live: $LIVE_LABEL ($LIVE_REV). Standby: $STANDBY."
+
+      - name: Pin the live revision at 100%
+        run: |
+          az containerapp ingress traffic set -g $RG_PROD -n $APP_PROD \
+            --revision-weight "${{ steps.state.outputs.live_rev }}=100"
+
+      - name: Create the new revision with 0% traffic
+        run: |
+          NEW_REV="$APP_PROD--${GITHUB_SHA:0:7}"
+          az containerapp update -g $RG_PROD -n $APP_PROD \
+            --image "${{ needs.build.outputs.image }}" \
+            --revision-suffix ${GITHUB_SHA:0:7} \
+            --set-env-vars ENVIRONMENT=prod APP_VERSION=${GITHUB_SHA}
+          az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
+          NEW_W=$(jq -r --arg r "$NEW_REV" '[.[] | select(.revisionName==$r) | .weight] | add // 0' traffic.json)
+          echo "New revision weight: $NEW_W"
+          if [ "$NEW_W" != "0" ]; then
+            echo "The new revision received traffic. Stopping."
+            exit 1
+          fi
+
+      - name: Move the standby label to the new revision
+        run: |
+          az containerapp revision label add -g $RG_PROD -n $APP_PROD \
+            --label "${{ steps.state.outputs.standby }}" \
+            --revision "$APP_PROD--${GITHUB_SHA:0:7}" --yes
+
+      - name: Check the new revision before users see it
+        run: |
+          DOMAIN=$(az containerapp env show -g $RG_PROD -n $CAE_PROD \
+            --query properties.defaultDomain -o tsv | tr -d '\r')
+          REV_URL="https://$APP_PROD--${GITHUB_SHA:0:7}.$DOMAIN"
+          curl -fsS --retry 9 --retry-delay 10 "$REV_URL/health"
+          BASE_URL="$REV_URL" npm run test:e2e
+
+      - name: Switch traffic to the standby
+        run: |
+          az containerapp ingress traffic set -g $RG_PROD -n $APP_PROD \
+            --label-weight "${{ steps.state.outputs.live_label }}=0" \
+                           "${{ steps.state.outputs.standby }}=100"
+
+      - name: Verify the switch took effect
+        run: |
+          az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
+          NEW_LABEL_W=$(jq -r --arg l "${{ steps.state.outputs.standby }}" \
+            '[.[] | select(.label==$l) | .weight] | first // 0' traffic.json)
+          OLD_LABEL_W=$(jq -r --arg l "${{ steps.state.outputs.live_label }}" \
+            '[.[] | select(.label==$l) | .weight] | first // 0' traffic.json)
+          if [ "$NEW_LABEL_W" != "100" ] || [ "$OLD_LABEL_W" != "0" ]; then
+            echo "Switch did not verify. Reverting."
+            az containerapp ingress traffic set -g $RG_PROD -n $APP_PROD \
+              --label-weight "${{ steps.state.outputs.live_label }}=100" \
+                             "${{ steps.state.outputs.standby }}=0"
+            exit 1
+          fi
+
+      - name: Watch production for 5 minutes
+        run: |
+          PUBLIC=$(az containerapp show -g $RG_PROD -n $APP_PROD \
+            --query properties.configuration.ingress.fqdn -o tsv | tr -d '\r')
+          for i in $(seq 1 30); do
+            if ! curl -fsS "https://$PUBLIC/health" > /dev/null; then
+              echo "Production check failed. Switching back."
+              az containerapp ingress traffic set -g $RG_PROD -n $APP_PROD \
+                --label-weight "${{ steps.state.outputs.live_label }}=100" \
+                               "${{ steps.state.outputs.standby }}=0"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Keep only the two labeled revisions (live and last version)
+        run: |
+          
+          az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
+          KEEP=$(jq -r '[.[] | select(.revisionName!=null) | .revisionName] | unique | .[]' traffic.json)
+          echo "Keeping: $(echo $KEEP)"
+          az containerapp revision list -g $RG_PROD -n $APP_PROD \
+            --query "[?properties.active].name" -o tsv | tr -d '\r' > active.txt
+          while read -r REV; do
+            if echo "$KEEP" | grep -qx "$REV"; then
+              continue
+            fi
+            az containerapp revision deactivate -g $RG_PROD -n $APP_PROD --revision "$REV" || true
+          done < active.txt
+
+      - name: Record the production deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ID=$(gh api repos/$REPO/deployments -X POST \
+            -f ref=$GITHUB_SHA -f environment=production \
+            -F transient=false -F production_environment=true \
+            -f payload="{\"image\":\"${{ needs.build.outputs.image }}\",\"revision\":\"$APP_PROD--${{ needs.build.outputs.revision }}\"}" \
+            --jq .id)
+          gh api repos/$REPO/deployments/$ID/statuses -X POST \
+            -f state=success -f environment_url="${{ steps.url.outputs.url }}"
+
+  # Only after a successful production release. Permanent Git record.
+  tag-release:
+    needs: [build, deploy-prod]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the release tag
+        run: |
+          TAG="prod-${GITHUB_SHA:0:7}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Production release of $GITHUB_SHA
+          Image: ${{ needs.build.outputs.image }}"
+          git push origin "$TAG"
