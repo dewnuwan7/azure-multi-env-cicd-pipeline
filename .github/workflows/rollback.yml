@@ -1,6 +1,6 @@
 name: Roll back production
 
-# Manual only. A person starts it, a dry run shows the plan, and the apply job waits
+# Manual only. A reviewer starts it, a dry run shows the plan, and the apply job waits
 # for the production reviewer.
 
 on:
@@ -21,10 +21,11 @@ env:
   APP_PROD: nodeapp-prod
   CAE_PROD: cae-nodeapp-prod
   REPO: dewnuwan7/azure-multi-env-cicd-pipeline
+  RELEASE_WORKFLOW: ci-cd.yml
 
 jobs:
   plan:
-    # No environment: this job only reads state, so it needs no approval.
+    # No environment: this job only reads state
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
@@ -42,6 +43,23 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Check for an active release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Read the run list into a file first. If the read fails, this step fails,
+          # so an unknown state is never treated as an idle one.
+          gh run list --repo "$REPO" --workflow "$RELEASE_WORKFLOW" --json status --limit 50 > runs.json
+          ACTIVE=$(jq '[.[] | select(.status=="in_progress" or .status=="queued" or .status=="waiting")] | length' runs.json)
+          if [ "$ACTIVE" != "0" ]; then
+            echo "A release is in progress, queued, or waiting for approval. Stopping."
+            {
+              echo "## Rollback plan: aborted"
+              echo "- A release is in progress, queued, or waiting for approval."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Read the traffic table and plan
         id: plan
         env:
@@ -58,7 +76,7 @@ jobs:
             exit 0
           }
 
-          az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
+          az containerapp ingress traffic show -g "$RG_PROD" -n "$APP_PROD" -o json > traffic.json
           cat traffic.json
 
           # Exactly one label carries 100%, and that label names a revision.
@@ -80,9 +98,91 @@ jobs:
           [ -n "$STANDBY_REV" ] || abort "Standby label $STANDBY_LABEL has no revision to roll back to."
           [ "$STANDBY_W" = "0" ] || abort "Standby label $STANDBY_LABEL is not at 0%."
 
-          # A release that is running, queued, or waiting for approval is still changing production.
-          # If the run list can't be read, stop: an unknown state is not an idle one.
-          if ! RUNS=$(gh run list --repo "$REPO" --workflow ci-cd.yml --json status --limit 50 2>/dev/null); then
-            abort "Could not read the release history. Not acting on an unknown state."
+          # The standby revision must pass its own health check before traffic moves to it.
+          DOMAIN=$(az containerapp env show -g "$RG_PROD" -n "$CAE_PROD" \
+            --query properties.defaultDomain -o tsv | tr -d '\r')
+          if ! curl -fsS --max-time 10 "https://$STANDBY_REV.$DOMAIN/health" > /dev/null; then
+            abort "Standby revision $STANDBY_REV is not healthy. A rollback onto it would not help."
           fi
-          ACTIVE=$(echo "$RUNS" | jq '[.[] |
+
+          TARGET_IMAGE=$(az containerapp revision show -g "$RG_PROD" -n "$APP_PROD" --revision "$STANDBY_REV" \
+            --query "properties.template.containers[0].image" -o tsv | tr -d '\r')
+
+          {
+            echo "## Rollback plan"
+            echo "- Live now: label \`$LIVE_LABEL\`, revision \`$LIVE_REV\`"
+            echo "- Target: label \`$STANDBY_LABEL\`, revision \`$STANDBY_REV\` (health check passed)"
+            echo "- Result: \`$STANDBY_LABEL\` takes 100%, \`$LIVE_LABEL\` takes 0%"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "decision=proceed" >> "$GITHUB_OUTPUT"
+          echo "reason=" >> "$GITHUB_OUTPUT"
+          echo "live_label=$LIVE_LABEL" >> "$GITHUB_OUTPUT"
+          echo "live_revision=$LIVE_REV" >> "$GITHUB_OUTPUT"
+          echo "standby_label=$STANDBY_LABEL" >> "$GITHUB_OUTPUT"
+          echo "target_revision=$STANDBY_REV" >> "$GITHUB_OUTPUT"
+          echo "target_image=$TARGET_IMAGE" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: plan
+    if: ${{ !inputs.dry_run && needs.plan.outputs.decision == 'proceed' }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    outputs:
+      result: ${{ steps.apply.outputs.result }}
+    concurrency:
+      group: nodeapp-release
+      cancel-in-progress: false
+    steps:
+      - name: Confirm no release started since the plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --repo "$REPO" --workflow "$RELEASE_WORKFLOW" --json status --limit 50 > runs.json
+          ACTIVE=$(jq '[.[] | select(.status=="in_progress" or .status=="queued" or .status=="waiting")] | length' runs.json)
+          if [ "$ACTIVE" != "0" ]; then
+            echo "A release started or is waiting since the plan. Refusing to apply."
+            exit 1
+          fi
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Re-read the state and apply only if it has not changed since the plan
+        id: apply
+        run: |
+          az containerapp ingress traffic show -g "$RG_PROD" -n "$APP_PROD" -o json > traffic.json
+          LIVE_NOW=$(jq -r '[.[] | select(.weight==100) | .revisionName // empty] | first // empty' traffic.json)
+          STANDBY_NOW=$(jq -r --arg l "${{ needs.plan.outputs.standby_label }}" \
+            '[.[] | select(.label==$l) | .revisionName // empty] | first // empty' traffic.json)
+
+          if [ "$LIVE_NOW" != "${{ needs.plan.outputs.live_revision }}" ] \
+             || [ "$STANDBY_NOW" != "${{ needs.plan.outputs.target_revision }}" ]; then
+            echo "Production changed after the plan was made (live is now $LIVE_NOW). Not applying."
+            echo "result=not-applied" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set -g "$RG_PROD" -n "$APP_PROD" \
+            --label-weight "${{ needs.plan.outputs.standby_label }}=100" "${{ needs.plan.outputs.live_label }}=0"
+
+          az containerapp ingress traffic show -g "$RG_PROD" -n "$APP_PROD" -o json > traffic.json
+          STANDBY_W=$(jq -r --arg l "${{ needs.plan.outputs.standby_label }}" \
+            '[.[] | select(.label==$l) | .weight] | first // 0' traffic.json)
+          LIVE_W=$(jq -r --arg l "${{ needs.plan.outputs.live_label }}" \
+            '[.[] | select(.label==$l) | .weight] | first // 0' traffic.json)
+          if [ "$STANDBY_W" != "100" ] || [ "$LIVE_W" != "0" ]; then
+            echo "The switch did not verify (standby $STANDBY_W%, previous live $LIVE_W%)."
+            echo "result=failed-verification" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "result=rolled-back" >> "$GITHUB_OUTPUT"
+          echo "Rolled back to ${{ needs.plan.outputs.target_revision }}." >> "$GITHUB_STEP_SUMMARY"
