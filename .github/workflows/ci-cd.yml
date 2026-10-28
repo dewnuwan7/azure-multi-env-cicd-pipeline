@@ -120,7 +120,7 @@ jobs:
           az containerapp update -g $RG_DEV -n $APP_DEV \
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix "${GITHUB_SHA:0:7}" \
-            --set-env-vars ENVIRONMENT=dev APP_VERSION=${GITHUB_SHA} REQUEST_LOGGING=off
+            --replace-env-vars ENVIRONMENT=dev APP_VERSION=${GITHUB_SHA} REQUEST_LOGGING=off
       - name: Get the dev address
         id: url
         run: |
@@ -185,7 +185,7 @@ jobs:
           az containerapp update -g $RG_STAGING -n $APP_STAGING \
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix "${GITHUB_SHA:0:7}" \
-            --set-env-vars ENVIRONMENT=staging APP_VERSION=${GITHUB_SHA}
+            --replace-env-vars ENVIRONMENT=staging APP_VERSION=${GITHUB_SHA}
       
       - name: Wait for the staging revision to be ready
         run: |
@@ -290,7 +290,7 @@ jobs:
           az containerapp update -g $RG_PROD -n $APP_PROD \
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix ${GITHUB_SHA:0:7} \
-            --set-env-vars ENVIRONMENT=prod APP_VERSION=${GITHUB_SHA}
+            --replace-env-vars ENVIRONMENT=production APP_VERSION=${GITHUB_SHA}
           az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
           NEW_W=$(jq -r --arg r "$NEW_REV" '[.[] | select(.revisionName==$r) | .weight] | add // 0' traffic.json)
           echo "New revision weight: $NEW_W"
