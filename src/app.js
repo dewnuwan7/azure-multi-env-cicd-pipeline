@@ -29,6 +29,11 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+  // TEST ONLY: fail health checks in production. Remove after the test.
+  if (process.env.ENVIRONMENT === 'prod') {
+    return res.status(500).json({ healthy: false });
+  }
+
 app.get('/health', (req, res) => {
   if (broken) {
     return res.status(500).json({ healthy: false });
