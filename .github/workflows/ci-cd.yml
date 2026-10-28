@@ -290,7 +290,7 @@ jobs:
           az containerapp update -g $RG_PROD -n $APP_PROD \
             --image "${{ needs.build.outputs.image }}" \
             --revision-suffix ${GITHUB_SHA:0:7} \
-            --set-env-vars ENVIRONMENT=prod APP_VERSION=${GITHUB_SHA}
+            --set-env-vars ENVIRONMENT=prod APP_VERSION=${GITHUB_SHA} FAIL_AFTER_SECONDS=180
           az containerapp ingress traffic show -g $RG_PROD -n $APP_PROD -o json > traffic.json
           NEW_W=$(jq -r --arg r "$NEW_REV" '[.[] | select(.revisionName==$r) | .weight] | add // 0' traffic.json)
           echo "New revision weight: $NEW_W"
