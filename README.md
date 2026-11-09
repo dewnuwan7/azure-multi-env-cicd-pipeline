@@ -1,4 +1,6 @@
 # Github Actions Multi Environment CI/CD Pipeline on Azure Container Apps
+[![CI/CD](https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline/actions/workflows/ci-cd.yml)
+[![Roll back production](https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline/actions/workflows/rollback.yml/badge.svg)](https://github.com/dewnuwan7/azure-multi-env-cicd-pipeline/actions/workflows/rollback.yml)
 
 A release pipeline for a small Node.js service. Each commit builds one container image, which is scanned, pushed, and promoted by digest through `dev`, `staging`, and `production`. Production releases switch traffic between two labeled revisions, and rollback is a traffic change. No passwords or client secrets are stored anywhere.
 
